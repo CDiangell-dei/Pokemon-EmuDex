@@ -1,0 +1,10 @@
+{
+  "name": "Moedex - Living Dex & Nuzlocke Tracker",
+  "short_name": "Moedex",
+  "description": "Moemon Living Dex & Nuzlocke Tracker com Supabase e Pokédex Multi-Região",
+  "start_url": "/moedex/",
+  "display": "standalone",
+  "background_color": "#030712",
+  "theme_color": "#dc2626",
+  "orientation": "any"
+}
