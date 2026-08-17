@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, Upload, Sparkles, Gamepad2, Save, Download, Maximize2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Play, Upload, Sparkles, Gamepad2, Maximize2, ExternalLink } from 'lucide-react';
 import { db } from '../../services/db';
 import { processRomUpload } from '../../services/romHandler';
 import { parseGen3Save, ParsedSaveData } from '../../services/saveParser';
@@ -25,65 +25,45 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
     const [isEmulatorRunning, setIsEmulatorRunning] = useState(false);
+    const [runningGameCode, setRunningGameCode] = useState<string | null>(autoStartCode || null);
     const [activeRomTitle, setActiveRomTitle] = useState<string | null>(null);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [storedRoms, setStoredRoms] = useState<any[]>([]);
-    const [pendingRomBuffer, setPendingRomBuffer] = useState<{ buffer: ArrayBuffer; title: string; code: string } | null>(null);
 
     useEffect(() => {
         db.listRoms().then(list => {
             setStoredRoms(list);
             if (autoStartCode) {
                 const found = list.find(r => r.gameCode === autoStartCode);
-                if (found) startRomFromDb(autoStartCode);
+                if (found) {
+                    setRunningGameCode(autoStartCode);
+                    setActiveRomTitle(found.title);
+                    setIsEmulatorRunning(true);
+                }
             }
         });
     }, [autoStartCode]);
-
-    // Enviar a ROM para o iframe assim que ele estiver pronto
-    const sendRomToIframe = useCallback(async (romBuffer: ArrayBuffer, title: string, code: string) => {
-        if (!iframeRef.current || !iframeRef.current.contentWindow) return;
-
-        const existingSave = await db.getSram(code);
-
-        iframeRef.current.contentWindow.postMessage({
-            type: 'START_ROM',
-            romBuffer: romBuffer,
-            sramBuffer: existingSave?.sramData ? existingSave.sramData.buffer : null
-        }, '*');
-
-        setActiveRomTitle(title);
-        setIsEmulatorRunning(true);
-        setStatusMessage(`🎮 "${title}" iniciado com sucesso!`);
-        setTimeout(() => setStatusMessage(null), 4000);
-
-        if (onRomLoaded) onRomLoaded(title, code);
-    }, [onRomLoaded]);
 
     // Listener de mensagens do iframe (Auto-save e sincronização da Living Dex)
     useEffect(() => {
         const handleIframeMessage = async (event: MessageEvent) => {
             if (!event.data) return;
 
-            if (event.data.type === 'IFRAME_MOUNTED' && pendingRomBuffer) {
-                await sendRomToIframe(pendingRomBuffer.buffer, pendingRomBuffer.title, pendingRomBuffer.code);
-                setPendingRomBuffer(null);
-            }
-
             if (event.data.type === 'SRAM_UPDATED' && event.data.sram) {
                 try {
                     const rawSram = event.data.sram;
                     const buffer = rawSram instanceof ArrayBuffer ? rawSram : rawSram.buffer || new Uint8Array(rawSram).buffer;
+                    const targetCode = event.data.gameCode || runningGameCode || gameCode;
 
                     if (buffer.byteLength >= 65536) {
                         const sramBytes = new Uint8Array(buffer);
-                        await db.saveSram(gameCode, sramBytes);
+                        await db.saveSram(targetCode, sramBytes);
 
                         if (currentUser && !currentUser.isGuest) {
-                            syncSaveFileWithCloud(gameCode, { gameCode, sramData: sramBytes, updatedAt: Date.now() }, currentUser.id);
+                            syncSaveFileWithCloud(targetCode, { gameCode: targetCode, sramData: sramBytes, updatedAt: Date.now() }, currentUser.id);
                         }
 
-                        const parsed = parseGen3Save(buffer, gameCode);
+                        const parsed = parseGen3Save(buffer, targetCode);
                         onSaveAutoParsed(parsed);
                         setStatusMessage(`💾 Save sincronizado com a Living Dex! (${parsed.allCaughtDexIds.length} Pokémon)`);
                         setTimeout(() => setStatusMessage(null), 3000);
@@ -96,23 +76,21 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
 
         window.addEventListener('message', handleIframeMessage);
         return () => window.removeEventListener('message', handleIframeMessage);
-    }, [pendingRomBuffer, sendRomToIframe, gameCode, currentUser, onSaveAutoParsed]);
+    }, [runningGameCode, gameCode, currentUser, onSaveAutoParsed]);
 
     const startRomFromDb = async (code: string) => {
         try {
-            setStatusMessage('Carregando ROM do armazenamento...');
+            setStatusMessage('Iniciando ROM...');
             const stored = await db.getRom(code);
             if (!stored || !stored.romData) {
                 alert('ROM não encontrada.');
                 return;
             }
 
-            setPendingRomBuffer({
-                buffer: stored.romData,
-                title: stored.title,
-                code: stored.gameCode
-            });
+            setRunningGameCode(code);
+            setActiveRomTitle(stored.title);
             setIsEmulatorRunning(true);
+            if (onRomLoaded) onRomLoaded(stored.title, code);
         } catch (e: any) {
             alert(`Erro: ${e.message}`);
             setStatusMessage(null);
@@ -124,15 +102,13 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         if (!file) return;
 
         try {
-            setStatusMessage('Processando e extraindo ROM...');
+            setStatusMessage('Processando e registrando ROM...');
             const { header, storedRom } = await processRomUpload(file);
             
-            setPendingRomBuffer({
-                buffer: storedRom.romData,
-                title: header.title,
-                code: header.gameCode
-            });
+            setRunningGameCode(header.gameCode);
+            setActiveRomTitle(header.title);
             setIsEmulatorRunning(true);
+            if (onRomLoaded) onRomLoaded(header.title, header.gameCode);
             db.listRoms().then(list => setStoredRoms(list));
         } catch (err: any) {
             alert(`Erro ao carregar ROM: ${err.message}`);
@@ -141,10 +117,14 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
     };
 
     const handleFullscreen = () => {
-        if (iframeRef.current) {
-            if (iframeRef.current.requestFullscreen) {
-                iframeRef.current.requestFullscreen();
-            }
+        if (iframeRef.current && iframeRef.current.requestFullscreen) {
+            iframeRef.current.requestFullscreen();
+        }
+    };
+
+    const handleOpenInNewTab = () => {
+        if (runningGameCode) {
+            window.open(`./emulator.html?code=${encodeURIComponent(runningGameCode)}`, '_blank');
         }
     };
 
@@ -175,13 +155,22 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                     />
 
                     {isEmulatorRunning && (
-                        <button
-                            onClick={handleFullscreen}
-                            className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
-                            title="Tela Cheia"
-                        >
-                            <Maximize2 size={16} />
-                        </button>
+                        <>
+                            <button
+                                onClick={handleOpenInNewTab}
+                                className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
+                                title="Abrir em Nova Aba / Janela Separada"
+                            >
+                                <ExternalLink size={16} />
+                            </button>
+                            <button
+                                onClick={handleFullscreen}
+                                className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
+                                title="Tela Cheia"
+                            >
+                                <Maximize2 size={16} />
+                            </button>
+                        </>
                     )}
 
                     <button
@@ -202,12 +191,13 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 </div>
             )}
 
-            {/* Container do Emulador (Iframe Isolado de Alta Performance) */}
+            {/* Container do Emulador */}
             <div className="relative w-full aspect-[3/2] max-w-[720px] bg-black rounded-3xl overflow-hidden border-4 border-gray-800 shadow-2xl flex items-center justify-center">
-                {isEmulatorRunning ? (
+                {isEmulatorRunning && runningGameCode ? (
                     <iframe
                         ref={iframeRef}
-                        src="./emulator.html"
+                        key={runningGameCode}
+                        src={`./emulator.html?code=${encodeURIComponent(runningGameCode)}`}
                         className="w-full h-full border-0"
                         allow="autoplay; gamepad; fullscreen"
                     />
@@ -222,7 +212,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                         <div className="space-y-1">
                             <h4 className="font-black text-lg text-gray-200">Pronto para Jogar</h4>
                             <p className="text-xs text-gray-400 max-w-md">
-                                Clique no botão para selecionar seu arquivo <code>.gba</code> ou <code>.zip</code>.
+                                Clique no botão acima para selecionar a ROM (.gba ou .zip). O jogo inicia na hora!
                             </p>
                         </div>
 
