@@ -1,0 +1,17 @@
+{
+  "name": "MoeDex GBA Cloud",
+  "short_name": "MoeDex",
+  "description": "Emulador GBA e Living Dex Nuzlocke Tracker",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#dc2626",
+  "icons": [
+    {
+      "src": "./sprites/gen-1/025.png",
+      "sizes": "64x64",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

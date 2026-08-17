@@ -1,25 +1,24 @@
 {
-  "name": "moedex",
-  "private": true,
+  "name": "moedex-gba-cloud",
   "version": "2.0.0",
-  "type": "module",
+  "description": "Emulador GBA e Living Dex Nuzlocke Tracker com Sincronização em Nuvem",
+  "main": "src/index.tsx",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "esbuild src/index.tsx --bundle --minify --outfile=app.bundle.js",
+    "start": "python -m http.server 8080"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
-    "lucide-react": "^0.475.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "fflate": "^0.8.2",
+    "lucide-react": "^1.16.0",
+    "nostalgist": "^0.21.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.0.7",
-    "@types/react": "^19.0.8",
-    "@types/react-dom": "^19.0.3",
-    "@vitejs/plugin-react": "^4.3.4",
-    "tailwindcss": "^4.0.7",
-    "vite": "^6.1.0"
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.3"
   }
 }

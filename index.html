@@ -1,15 +1,83 @@
-<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/moedex/manifest.json" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#dc2626" />
-    <title>Moedex - Living Dex & Nuzlocke Tracker</title>
-  </head>
-  <body class="bg-gray-950 text-gray-100 antialiased font-sans">
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoeDex GBA Cloud</title>
+    <link rel="icon" href="./sprites/gen-1/025.png" type="image/png">
+    
+    <!-- PWA Manifest & Mobile Config -->
+    <link rel="manifest" href="./manifest.json">
+    <meta name="theme-color" content="#dc2626">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MoeDex">
+
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            950: '#0a0a0f',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Default Sprites Manifest -->
+    <script src="./sprites_manifest.js"></script>
+
+    <style>
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.4);
+        }
+        
+        .image-pixelated {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #game-container iframe, #game-container canvas {
+            width: 100% !important;
+            height: 100% !important;
+            border-radius: 1rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
     <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+
+    <!-- Script de Desregistro de Qualquer Service Worker Antigo -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                for(let registration of registrations) {
+                    registration.unregister();
+                    console.log('[Clean Reset] Service Worker antigo desregistrado com sucesso.');
+                }
+            });
+        }
+    </script>
+
+    <!-- Bundle React Compilado -->
+    <script src="./app.bundle.js?v=2.0.0"></script>
+</body>
 </html>
