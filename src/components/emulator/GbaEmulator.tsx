@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, Pause, RotateCcw, Download, Upload, Maximize2, FastForward, Volume2, VolumeX, Save, Sparkles, Loader2, Gamepad2, Camera, Check, Clock } from 'lucide-react';
+import { Play, Pause, RotateCcw, Download, Upload, Maximize2, FastForward, Save, Sparkles, Loader2, Gamepad2, Camera } from 'lucide-react';
 import { Nostalgist } from 'nostalgist';
-import { db, StoredRom } from '../../services/db';
+import { db } from '../../services/db';
 import { processRomUpload } from '../../services/romHandler';
 import { parseGen3Save, ParsedSaveData } from '../../services/saveParser';
 import { syncSaveFileWithCloud } from '../../services/supabase';
@@ -84,7 +84,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         }
     }, [gameCode, currentUser, onSaveAutoParsed]);
 
-    // Salvar antes de fechar a aba ou navegar
+    // Salvar ao fechar a aba
     useEffect(() => {
         const handleBeforeUnload = () => {
             saveAndSyncSram(false);
@@ -106,7 +106,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         };
     }, [saveAndSyncSram]);
 
-    // Iniciar Nostalgist com Save Carregado
+    // Iniciar Nostalgist
     const launchNostalgistWithRom = async (romData: ArrayBuffer, title: string, code: string) => {
         try {
             setIsLoadingCore(true);
@@ -123,18 +123,16 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
 
             // Carregar save anterior do IndexedDB para continuar o jogo
             const existingSave = await db.getSram(code);
-            const initialSramBlob = existingSave?.sramData ? new Blob([existingSave.sramData as any]) : undefined;
 
-            const romBlob = new Blob([romData]);
-
-            const instance = await Nostalgist.launch({
+            const launchOptions: any = {
                 core: 'mgba',
-                rom: romBlob,
+                rom: {
+                    fileName: `${code}.gba`,
+                    fileContent: new Uint8Array(romData)
+                },
                 element: canvasRef.current || undefined,
-                sram: initialSramBlob,
-                sramType: 'sav',
                 retroarchConfig: {
-                    // Controles solicitados: WASD para Direcionais, E para A, Shift para B
+                    // Controles: WASD para Direcionais, E para A, Shift para B
                     input_player1_up: 'w',
                     input_player1_down: 's',
                     input_player1_left: 'a',
@@ -145,12 +143,19 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                     input_player1_r: 'r',
                     input_player1_start: 'enter',
                     input_player1_select: 'space',
-                    
-                    video_vsync: true,
-                    audio_enable: true,
                     fastforward_ratio: 3.0
                 }
-            });
+            };
+
+            if (existingSave?.sramData && existingSave.sramData.length >= 65536) {
+                launchOptions.sram = {
+                    fileName: `${code}.sav`,
+                    fileContent: existingSave.sramData
+                };
+                launchOptions.sramType = 'sav';
+            }
+
+            const instance = await Nostalgist.launch(launchOptions);
 
             nostalgistRef.current = instance;
             setActiveRomTitle(title);
@@ -158,7 +163,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
             setIsLoadingCore(false);
             setIsFastForward(false);
             
-            const saveNotice = existingSave ? ' (Save anterior restaurado)' : ' (Novo Save)';
+            const saveNotice = existingSave ? ' (Save anterior restaurado)' : '';
             setStatusMessage(`🎮 "${title}" iniciado${saveNotice}!`);
             setTimeout(() => setStatusMessage(null), 4000);
 
@@ -441,16 +446,17 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 </div>
             )}
 
-            {/* Container do Jogo */}
+            {/* Container do Jogo: Canvas SEMPRE presente no DOM para o WebGL funcionar */}
             <div className="relative w-full aspect-[3/2] max-w-[720px] bg-black rounded-3xl overflow-hidden border-4 border-gray-800 shadow-2xl flex items-center justify-center">
                 
                 <canvas
                     ref={canvasRef}
-                    className={`w-full h-full object-contain image-pixelated ${!isEmulatorRunning ? 'hidden' : 'block'}`}
+                    className="w-full h-full object-contain image-pixelated block"
                 />
 
+                {/* Overlay quando o jogo não está ativo */}
                 {!isEmulatorRunning && (
-                    <div className="flex flex-col items-center justify-center gap-5 p-8 text-center">
+                    <div className="absolute inset-0 bg-gray-950 flex flex-col items-center justify-center gap-5 p-8 text-center z-10">
                         {isLoadingCore ? (
                             <div className="flex flex-col items-center gap-3">
                                 <Loader2 size={48} className="animate-spin text-red-500" />
