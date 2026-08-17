@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>MoeDex GBA Player</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            background: #000;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #fff;
+        }
+        #game-wrapper {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+        #game {
+            width: 100%;
+            height: 100%;
+        }
+        #loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: #0a0a0f;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            z-index: 100;
+            transition: opacity 0.3s ease;
+        }
+        .spinner {
+            width: 44px;
+            height: 44px;
+            border: 4px solid rgba(220, 38, 38, 0.2);
+            border-top-color: #dc2626;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="game-wrapper">
+        <div id="game"></div>
+        <div id="loading-overlay">
+            <div class="spinner"></div>
+            <p id="loading-text" style="font-size: 14px; font-weight: bold; color: #f87171;">Aguardando ROM...</p>
+        </div>
+    </div>
+
+    <script>
+        let isStarted = false;
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+
+        window.addEventListener('message', async (event) => {
+            const data = event.data;
+            if (!data || isStarted) return;
+
+            if (data.type === 'START_ROM') {
+                isStarted = true;
+                loadingText.innerText = 'Iniciando motor GBA...';
+
+                try {
+                    const romBlob = new Blob([data.romBuffer], { type: 'application/octet-stream' });
+                    const romUrl = URL.createObjectURL(romBlob);
+
+                    window.EJS_player = '#game';
+                    window.EJS_core = 'gba';
+                    window.EJS_gameUrl = romUrl;
+                    window.EJS_pathtodata = 'https://cdn.jsdelivr.net/gh/EmulatorJS/EmulatorJS@latest/data/';
+                    window.EJS_startOnLoaded = true;
+                    window.EJS_color = '#dc2626';
+
+                    // Save anterior se existir
+                    if (data.sramBuffer) {
+                        const saveBlob = new Blob([data.sramBuffer], { type: 'application/octet-stream' });
+                        window.EJS_loadStateURL = URL.createObjectURL(saveBlob);
+                    }
+
+                    // Controles configurados: WASD + E (A) + Shift (B)
+                    window.EJS_defaultControls = {
+                        0: {
+                            'UP': 'KeyW',
+                            'DOWN': 'KeyS',
+                            'LEFT': 'KeyA',
+                            'RIGHT': 'KeyD',
+                            'A': 'KeyE',
+                            'B': 'ShiftLeft',
+                            'L': 'KeyQ',
+                            'R': 'KeyR',
+                            'START': 'Enter',
+                            'SELECT': 'Space'
+                        }
+                    };
+
+                    window.EJS_onGameStart = function() {
+                        if (loadingOverlay) {
+                            loadingOverlay.style.opacity = '0';
+                            setTimeout(() => { loadingOverlay.style.display = 'none'; }, 300);
+                        }
+                        window.parent.postMessage({ type: 'EMULATOR_READY' }, '*');
+                    };
+
+                    window.EJS_onSave = function(e) {
+                        if (e && e.data) {
+                            window.parent.postMessage({ type: 'SRAM_UPDATED', sram: e.data }, '*');
+                        }
+                    };
+
+                    const script = document.createElement('script');
+                    script.src = 'https://cdn.jsdelivr.net/gh/EmulatorJS/EmulatorJS@latest/data/loader.js';
+                    script.async = true;
+                    document.body.appendChild(script);
+
+                } catch (err) {
+                    loadingText.innerText = 'Erro ao iniciar: ' + err.message;
+                    console.error('[Emulator Iframe Error]', err);
+                }
+            }
+        });
+
+        // Avisar ao React que o iframe está pronto para receber a ROM
+        window.parent.postMessage({ type: 'IFRAME_MOUNTED' }, '*');
+    </script>
+</body>
+</html>
