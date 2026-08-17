@@ -4,8 +4,9 @@ import { Search, Loader2, X, Gamepad2, Sparkles, Save, Upload } from 'lucide-rea
 import { db, StoredRom } from './services/db';
 import { processRomUpload } from './services/romHandler';
 import { parseGen3Save, ParsedSaveData } from './services/saveParser';
-import { syncRunToDatabase } from './services/supabase';
+import { syncRunToDatabase, loadUserRunsFromCloud } from './services/supabase';
 import { fetchMasterPokemonList, fetchPokemonDetails } from './services/pokeApi';
+import { getCurrentUser, UserProfile } from './services/auth';
 
 import { BasicPokemon, PokemonApiDetails, CaughtPokemonData } from './types/pokemon';
 import { RunData, GlobalAppState } from './types/run';
@@ -18,6 +19,7 @@ import { PokemonCard } from './components/tracker/PokemonCard';
 import { PokemonDetailModal } from './components/tracker/PokemonDetailModal';
 import { TeamSidebar } from './components/tracker/TeamSidebar';
 import { GbaCloudModal } from './components/modals/GbaCloudModal';
+import { AuthModal } from './components/modals/AuthModal';
 
 const PAGE_SIZE = 48;
 
@@ -40,6 +42,9 @@ export const App: React.FC = () => {
   const [spriteStyle, setSpriteStyle] = useState<'moemon' | 'classic'>(() => (localStorage.getItem('moedex_sprite_style') as any) || 'moemon');
   const [currentTheme, setCurrentTheme] = useState<string>(() => localStorage.getItem('moedex_theme') || 'red');
   const theme = THEMES[currentTheme] || THEMES.red;
+
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   const [globalState, setGlobalState] = useState<GlobalAppState>(() => {
     try {
@@ -70,6 +75,41 @@ export const App: React.FC = () => {
   const [loadedRoms, setLoadedRoms] = useState<any[]>([]);
   const [saveStatusMessage, setSaveStatusMessage] = useState<string | null>(null);
   const [autoStartCode, setAutoStartCode] = useState<string | null>(null);
+
+  // Inicializar usuário
+  useEffect(() => {
+    getCurrentUser().then(user => setCurrentUser(user));
+  }, []);
+
+  // Quando usuário logar, carregar suas Runs da nuvem
+  useEffect(() => {
+    if (currentUser && !currentUser.isGuest) {
+      loadUserRunsFromCloud(currentUser.id).then(cloudRuns => {
+        if (cloudRuns && cloudRuns.length > 0) {
+          const mappedRuns: RunData[] = cloudRuns.map(r => ({
+            id: r.id,
+            trainer: r.trainer_name,
+            trainer_id: r.trainer_id,
+            secret_id: r.secret_id,
+            game: r.game_title,
+            game_code: r.game_code,
+            nuzlocke: r.is_nuzlocke,
+            living_dex: r.living_dex || [],
+            team: r.team || [],
+            graveyard: r.graveyard || [],
+            routes: r.routes || {},
+            play_time: r.play_time || {},
+            total_caught: r.total_caught || (r.living_dex || []).length
+          }));
+          setGlobalState(prev => ({
+            ...prev,
+            runs: mappedRuns,
+            activeRunId: mappedRuns[0].id
+          }));
+        }
+      });
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     localStorage.setItem('moedex_global_state_v2', JSON.stringify(globalState));
@@ -110,14 +150,14 @@ export const App: React.FC = () => {
       const updatedRuns = prev.runs.map(r => {
         if (r.id === prev.activeRunId) {
           const updated = { ...r, ...updater, updated_at: new Date().toISOString() };
-          syncRunToDatabase(updated);
+          syncRunToDatabase(updated, currentUser?.id);
           return updated;
         }
         return r;
       });
       return { ...prev, runs: updatedRuns };
     });
-  }, []);
+  }, [currentUser]);
 
   const handleSaveAutoParsed = useCallback((parsed: ParsedSaveData) => {
     const caughtSet = new Set(currentRun.living_dex || []);
@@ -206,7 +246,7 @@ export const App: React.FC = () => {
         game: header.title,
         game_code: header.gameCode
       });
-      setSaveStatusMessage(`ROM "${header.title}" adicionada!`);
+      setSaveStatusMessage(`ROM "${header.title}" pronta!`);
       setTimeout(() => setSaveStatusMessage(null), 4000);
     } catch (e: any) {
       alert(`Erro ao adicionar ROM: ${e.message}`);
@@ -269,6 +309,8 @@ export const App: React.FC = () => {
         onSetSpriteStyle={setSpriteStyle}
         onOpenGbaModal={() => setIsGbaModalOpen(true)}
         onOpenThemeModal={() => setIsThemeModalOpen(true)}
+        onOpenAuthModal={() => setIsAuthModalOpen(true)}
+        currentUser={currentUser}
         currentRunTitle={currentRun.game}
         totalCaught={currentRun.total_caught || 0}
         theme={theme}
@@ -300,6 +342,7 @@ export const App: React.FC = () => {
               gameCode={currentRun.game_code || 'BPEE'}
               onSaveAutoParsed={handleSaveAutoParsed}
               autoStartCode={autoStartCode}
+              currentUser={currentUser}
               onRomLoaded={(title, code) => {
                 updateCurrentRun({ game: title, game_code: code });
               }}
@@ -317,6 +360,7 @@ export const App: React.FC = () => {
                   gameCode={currentRun.game_code || 'BPEE'}
                   onSaveAutoParsed={handleSaveAutoParsed}
                   autoStartCode={autoStartCode}
+                  currentUser={currentUser}
                   onRomLoaded={(title, code) => {
                     updateCurrentRun({ game: title, game_code: code });
                   }}
@@ -502,6 +546,14 @@ export const App: React.FC = () => {
         onUploadRom={handleUploadRom}
         onUploadSave={handleUploadSave}
         statusMessage={saveStatusMessage}
+      />
+
+      {/* Modal de Autenticação & Perfil */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        currentUser={currentUser}
+        onUserChanged={(user) => setCurrentUser(user)}
       />
 
       {/* Modal de Temas */}

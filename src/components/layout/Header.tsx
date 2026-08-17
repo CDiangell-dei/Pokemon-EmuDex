@@ -1,6 +1,7 @@
 import React from 'react';
-import { Gamepad2, BookOpen, Sparkles, HardDrive, Palette } from 'lucide-react';
+import { Gamepad2, BookOpen, Sparkles, HardDrive, Palette, User, Cloud } from 'lucide-react';
 import { ThemeConfig } from '../../types/theme';
+import { UserProfile } from '../../services/auth';
 
 interface HeaderProps {
     viewMode: 'welcome' | 'emulator' | 'tracker' | 'split';
@@ -9,6 +10,8 @@ interface HeaderProps {
     onSetSpriteStyle: (style: 'moemon' | 'classic') => void;
     onOpenGbaModal: () => void;
     onOpenThemeModal: () => void;
+    onOpenAuthModal: () => void;
+    currentUser: UserProfile | null;
     currentRunTitle: string;
     totalCaught: number;
     theme: ThemeConfig;
@@ -21,12 +24,14 @@ export const Header: React.FC<HeaderProps> = ({
     onSetSpriteStyle,
     onOpenGbaModal,
     onOpenThemeModal,
+    onOpenAuthModal,
+    currentUser,
     currentRunTitle,
     totalCaught,
     theme
 }) => {
     return (
-        <header className="sticky top-0 z-40 bg-gray-950/80 backdrop-blur-xl border-b border-white/10 px-4 py-3">
+        <header className="sticky top-0 z-40 bg-gray-950/85 backdrop-blur-xl border-b border-white/10 px-4 py-3">
             <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
                 
                 {/* Logo e Título */}
@@ -77,9 +82,23 @@ export const Header: React.FC<HeaderProps> = ({
                     </button>
                 </div>
 
-                {/* Controles da Direita: Estilo Visual, GBA Hub e Temas */}
+                {/* Controles da Direita */}
                 <div className="flex items-center gap-2">
                     
+                    {/* Botão de Usuário / Login */}
+                    <button
+                        onClick={onOpenAuthModal}
+                        className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
+                            currentUser && !currentUser.isGuest
+                                ? 'bg-green-600/20 border-green-500/40 text-green-400 hover:bg-green-600/30'
+                                : 'bg-gray-900 hover:bg-gray-800 border-white/10 text-gray-300'
+                        }`}
+                        title={currentUser ? `Conectado como ${currentUser.displayName}` : 'Entrar na Conta para Salvar na Nuvem'}
+                    >
+                        <User size={14} className={currentUser && !currentUser.isGuest ? 'text-green-400' : 'text-gray-400'} />
+                        <span className="hidden md:inline">{currentUser ? currentUser.displayName : 'Entrar / Conta'}</span>
+                    </button>
+
                     {/* Seletor de Estilo Moemon / Clássico */}
                     <div className="flex items-center bg-gray-900 border border-white/10 p-1 rounded-xl text-xs font-bold">
                         <button
@@ -90,7 +109,7 @@ export const Header: React.FC<HeaderProps> = ({
                             title="Visual Moemon (Pixel Art)"
                         >
                             <span>🎀</span>
-                            <span className="hidden md:inline">Moemon</span>
+                            <span className="hidden lg:inline">Moemon</span>
                         </button>
                         <button
                             onClick={() => onSetSpriteStyle('classic')}
@@ -100,7 +119,7 @@ export const Header: React.FC<HeaderProps> = ({
                             title="Visual Pokémon Tradicional (PokeAPI)"
                         >
                             <span>⚡</span>
-                            <span className="hidden md:inline">Clássico</span>
+                            <span className="hidden lg:inline">Clássico</span>
                         </button>
                     </div>
 
@@ -108,10 +127,10 @@ export const Header: React.FC<HeaderProps> = ({
                     <button
                         onClick={onOpenGbaModal}
                         className="px-3 py-2 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-400 text-xs font-bold flex items-center gap-2 transition-all"
-                        title="Gerenciador de Saves, ROMs e Nuvem"
+                        title="Gerenciador de Saves e ROMs"
                     >
                         <HardDrive size={14} />
-                        <span className="hidden sm:inline">GBA & Saves</span>
+                        <span className="hidden sm:inline">Saves</span>
                     </button>
 
                     {/* Botão de Temas */}

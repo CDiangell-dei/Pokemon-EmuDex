@@ -1,22 +1,26 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, Pause, RotateCcw, Download, Upload, Maximize2, FastForward, Volume2, VolumeX, Save, Sparkles, Loader2, Gamepad2, Camera } from 'lucide-react';
+import { Play, Pause, RotateCcw, Download, Upload, Maximize2, FastForward, Volume2, VolumeX, Save, Sparkles, Loader2, Gamepad2, Camera, Check, Clock } from 'lucide-react';
 import { Nostalgist } from 'nostalgist';
 import { db, StoredRom } from '../../services/db';
 import { processRomUpload } from '../../services/romHandler';
 import { parseGen3Save, ParsedSaveData } from '../../services/saveParser';
+import { syncSaveFileWithCloud } from '../../services/supabase';
+import { UserProfile } from '../../services/auth';
 
 interface GbaEmulatorProps {
     gameCode: string;
     onSaveAutoParsed: (parsedData: ParsedSaveData) => void;
     onRomLoaded?: (title: string, code: string) => void;
     autoStartCode?: string | null;
+    currentUser?: UserProfile | null;
 }
 
 export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
     gameCode,
     onSaveAutoParsed,
     onRomLoaded,
-    autoStartCode
+    autoStartCode,
+    currentUser
 }) => {
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -28,11 +32,12 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
     const [activeRomTitle, setActiveRomTitle] = useState<string | null>(null);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [storedRoms, setStoredRoms] = useState<any[]>([]);
-    const [isMuted, setIsMuted] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
+    const [isFastForward, setIsFastForward] = useState(false);
     const [showTouchControls, setShowTouchControls] = useState(false);
+    const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
+    const [quickStateBlob, setQuickStateBlob] = useState<Blob | null>(null);
 
-    // Carregar ROMs do IndexedDB
     useEffect(() => {
         db.listRoms().then(list => {
             setStoredRoms(list);
@@ -43,9 +48,54 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         });
     }, [autoStartCode]);
 
-    // Encerrar emulador ao desmontar
+    // Função de Salvamento Robusta (SRAM -> IndexedDB + Supabase + Living Dex)
+    const saveAndSyncSram = useCallback(async (isManual: boolean = false) => {
+        if (!nostalgistRef.current) return;
+        try {
+            const sramBlob = await nostalgistRef.current.saveSRAM();
+            if (!sramBlob) return;
+
+            const buffer = await sramBlob.arrayBuffer();
+            if (buffer.byteLength >= 65536) {
+                const sramBytes = new Uint8Array(buffer);
+                
+                // 1. Gravar no IndexedDB local
+                await db.saveSram(gameCode, sramBytes);
+
+                // 2. Gravar na nuvem do Supabase
+                if (currentUser && !currentUser.isGuest) {
+                    syncSaveFileWithCloud(gameCode, { gameCode, sramData: sramBytes, updatedAt: Date.now() }, currentUser.id);
+                }
+
+                // 3. Atualizar Living Dex e Equipe
+                const parsed = parseGen3Save(buffer, gameCode);
+                onSaveAutoParsed(parsed);
+
+                const nowTime = new Date().toLocaleTimeString();
+                setLastSavedTime(nowTime);
+
+                if (isManual) {
+                    setStatusMessage(`💾 Save de "${parsed.trainerName}" salvo com sucesso (${nowTime})!`);
+                    setTimeout(() => setStatusMessage(null), 3500);
+                }
+            }
+        } catch (e) {
+            console.warn('[Save/Sync Warning]', e);
+        }
+    }, [gameCode, currentUser, onSaveAutoParsed]);
+
+    // Salvar antes de fechar a aba ou navegar
     useEffect(() => {
+        const handleBeforeUnload = () => {
+            saveAndSyncSram(false);
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        window.addEventListener('pagehide', handleBeforeUnload);
+
         return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('pagehide', handleBeforeUnload);
+            saveAndSyncSram(false);
             if (intervalRef.current) clearInterval(intervalRef.current);
             if (nostalgistRef.current) {
                 try {
@@ -54,33 +104,13 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 nostalgistRef.current = null;
             }
         };
-    }, []);
+    }, [saveAndSyncSram]);
 
-    // Sincronização e Leitura de Save periódica
-    const syncSramWithDex = useCallback(async () => {
-        if (!nostalgistRef.current) return;
-        try {
-            const { sram } = await nostalgistRef.current.saveSram();
-            if (!sram) return;
-
-            const buffer = await sram.arrayBuffer();
-            if (buffer.byteLength >= 65536) {
-                await db.saveSram(gameCode, new Uint8Array(buffer));
-                const parsed = parseGen3Save(buffer, gameCode);
-                onSaveAutoParsed(parsed);
-                setStatusMessage(`Save de "${parsed.trainerName}" sincronizado! (${parsed.allCaughtDexIds.length} capturados)`);
-                setTimeout(() => setStatusMessage(null), 3000);
-            }
-        } catch (e) {
-            console.warn('[Auto-Parser Sync Warning]', e);
-        }
-    }, [gameCode, onSaveAutoParsed]);
-
-    // Iniciar Nostalgist com os botões WASD + E (A) + Shift (B)
+    // Iniciar Nostalgist com Save Carregado
     const launchNostalgistWithRom = async (romData: ArrayBuffer, title: string, code: string) => {
         try {
             setIsLoadingCore(true);
-            setStatusMessage(`Iniciando motor GBA (mGBA WebAssembly)...`);
+            setStatusMessage(`Iniciando mGBA WebAssembly...`);
 
             if (nostalgistRef.current) {
                 try {
@@ -91,9 +121,9 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
 
             if (intervalRef.current) clearInterval(intervalRef.current);
 
-            // Carregar save anterior do IndexedDB se existir
+            // Carregar save anterior do IndexedDB para continuar o jogo
             const existingSave = await db.getSram(code);
-            const initialSram = existingSave?.sramData ? new Blob([existingSave.sramData as any]) : undefined;
+            const initialSramBlob = existingSave?.sramData ? new Blob([existingSave.sramData as any]) : undefined;
 
             const romBlob = new Blob([romData]);
 
@@ -101,9 +131,10 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 core: 'mgba',
                 rom: romBlob,
                 element: canvasRef.current || undefined,
-                initialSram: initialSram,
+                sram: initialSramBlob,
+                sramType: 'sav',
                 retroarchConfig: {
-                    // Configuração solicitada: WASD para Direcionais, E para A, Shift para B
+                    // Controles solicitados: WASD para Direcionais, E para A, Shift para B
                     input_player1_up: 'w',
                     input_player1_down: 's',
                     input_player1_left: 'a',
@@ -125,13 +156,16 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
             setActiveRomTitle(title);
             setIsEmulatorRunning(true);
             setIsLoadingCore(false);
-            setStatusMessage(`🎮 "${title}" rodando a 60 FPS com controles WASD + E + Shift!`);
+            setIsFastForward(false);
+            
+            const saveNotice = existingSave ? ' (Save anterior restaurado)' : ' (Novo Save)';
+            setStatusMessage(`🎮 "${title}" iniciado${saveNotice}!`);
             setTimeout(() => setStatusMessage(null), 4000);
 
             if (onRomLoaded) onRomLoaded(title, code);
 
-            // Iniciar timer de sincronização a cada 10 segundos
-            intervalRef.current = setInterval(syncSramWithDex, 10000);
+            // Salvar automaticamente a cada 5 segundos
+            intervalRef.current = setInterval(() => saveAndSyncSram(false), 5000);
         } catch (err: any) {
             console.error('Erro ao iniciar emulador:', err);
             setIsLoadingCore(false);
@@ -140,10 +174,9 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         }
     };
 
-    // Iniciar ROM a partir do IndexedDB
     const startRomFromDb = async (code: string) => {
         try {
-            setStatusMessage('Carregando ROM do armazenamento local...');
+            setStatusMessage('Carregando ROM...');
             const stored = await db.getRom(code);
             if (!stored || !stored.romData) {
                 alert('ROM não encontrada.');
@@ -156,13 +189,12 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         }
     };
 
-    // Upload de novo arquivo de ROM (.gba / .zip)
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
 
         try {
-            setStatusMessage('Extraindo e verificando ROM...');
+            setStatusMessage('Processando ROM...');
             const { header, storedRom } = await processRomUpload(file);
             await launchNostalgistWithRom(storedRom.romData, header.title, header.gameCode);
             db.listRoms().then(list => setStoredRoms(list));
@@ -172,7 +204,19 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         }
     };
 
-    // Ações do Emulador
+    // Alternar Fast-Forward (Aceleração)
+    const handleToggleFastForward = () => {
+        if (!nostalgistRef.current) return;
+        try {
+            nostalgistRef.current.sendCommand('FAST_FORWARD');
+            setIsFastForward(prev => !prev);
+            setStatusMessage(isFastForward ? 'Velocidade normal (1x)' : '⚡ Fast-Forward Ativo (3x)');
+            setTimeout(() => setStatusMessage(null), 2500);
+        } catch (e) {
+            console.warn('Fast forward erro:', e);
+        }
+    };
+
     const handleTogglePause = () => {
         if (!nostalgistRef.current) return;
         if (isPaused) {
@@ -189,32 +233,62 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         nostalgistRef.current.restart();
     };
 
-    const handleScreenshot = async () => {
+    // Quick Save State
+    const handleQuickSaveState = async () => {
         if (!nostalgistRef.current) return;
         try {
-            const { screenshot } = await nostalgistRef.current.screenshot();
-            const a = document.createElement('a');
-            a.href = screenshot;
-            a.download = `${activeRomTitle || 'game'}_screenshot.png`;
-            a.click();
-        } catch (e) {}
+            const { state } = await nostalgistRef.current.saveState();
+            setQuickStateBlob(state);
+            setStatusMessage('⚡ Save State gravado na memória!');
+            setTimeout(() => setStatusMessage(null), 3000);
+        } catch (e: any) {
+            alert(`Erro no Save State: ${e.message}`);
+        }
+    };
+
+    // Quick Load State
+    const handleQuickLoadState = async () => {
+        if (!nostalgistRef.current || !quickStateBlob) {
+            alert('Nenhum Save State gravado nesta sessão.');
+            return;
+        }
+        try {
+            await nostalgistRef.current.loadState(quickStateBlob);
+            setStatusMessage('⚡ Save State restaurado!');
+            setTimeout(() => setStatusMessage(null), 3000);
+        } catch (e: any) {
+            alert(`Erro ao carregar Save State: ${e.message}`);
+        }
     };
 
     const handleExportSave = async () => {
         if (!nostalgistRef.current) return;
         try {
-            const { sram } = await nostalgistRef.current.saveSram();
-            const url = URL.createObjectURL(sram);
+            const sramBlob = await nostalgistRef.current.saveSRAM();
+            const url = URL.createObjectURL(sramBlob);
             const a = document.createElement('a');
             a.href = url;
             a.download = `${gameCode || 'pokemon'}.sav`;
             a.click();
             URL.revokeObjectURL(url);
-            setStatusMessage('Save (.sav) exportado com sucesso!');
+            setStatusMessage('Save (.sav) baixado com sucesso!');
             setTimeout(() => setStatusMessage(null), 3000);
         } catch (e: any) {
             alert(`Erro ao exportar save: ${e.message}`);
         }
+    };
+
+    const handleScreenshot = async () => {
+        if (!nostalgistRef.current) return;
+        try {
+            const blob = await nostalgistRef.current.screenshot();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${activeRomTitle || 'game'}_screenshot.png`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {}
     };
 
     const handleFullscreen = () => {
@@ -223,7 +297,6 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
         }
     };
 
-    // Enviar toque de botão virtual
     const sendButtonPress = (btn: string) => {
         if (nostalgistRef.current) {
             nostalgistRef.current.press(btn);
@@ -241,8 +314,15 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                     </div>
                     <div>
                         <h3 className="font-black text-base text-gray-100">{activeRomTitle || 'Emulador GBA Integrado'}</h3>
-                        <p className="text-xs text-gray-400 font-mono">
-                            {isEmulatorRunning ? '🟢 mGBA WebAssembly • 60 FPS' : '⚪ Aguardando Seleção de ROM'}
+                        <p className="text-xs text-gray-400 font-mono flex items-center gap-2">
+                            {isEmulatorRunning ? (
+                                <>
+                                    <span className="text-green-400">🟢 60 FPS</span>
+                                    {lastSavedTime && <span className="text-gray-500">• Salvo às {lastSavedTime}</span>}
+                                </>
+                            ) : (
+                                '⚪ Aguardando Seleção de ROM'
+                            )}
                         </p>
                     </div>
                 </div>
@@ -259,6 +339,30 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
 
                     {isEmulatorRunning && (
                         <>
+                            {/* Botão de Fast-Forward */}
+                            <button
+                                onClick={handleToggleFastForward}
+                                className={`px-3 py-2 rounded-xl border text-xs font-black flex items-center gap-1.5 transition-all ${
+                                    isFastForward
+                                        ? 'bg-yellow-500 text-black border-yellow-400 shadow-lg shadow-yellow-500/20'
+                                        : 'bg-gray-800 hover:bg-gray-700 text-yellow-400 border-white/10'
+                                }`}
+                                title="Acelerar Velocidade do Jogo (3x)"
+                            >
+                                <FastForward size={16} />
+                                <span>{isFastForward ? '3x' : '1x'}</span>
+                            </button>
+
+                            {/* Botão de Salvar Manual */}
+                            <button
+                                onClick={() => saveAndSyncSram(true)}
+                                className="px-3 py-2 rounded-xl bg-green-600 hover:bg-green-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-lg shadow-green-600/20"
+                                title="Gravar Save do Jogo e Sincronizar com a Nuvem"
+                            >
+                                <Save size={16} />
+                                <span className="hidden sm:inline">Salvar</span>
+                            </button>
+
                             <button
                                 onClick={handleTogglePause}
                                 className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
@@ -266,6 +370,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                             >
                                 {isPaused ? <Play size={16} className="text-green-400" /> : <Pause size={16} />}
                             </button>
+
                             <button
                                 onClick={handleRestart}
                                 className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
@@ -273,13 +378,25 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                             >
                                 <RotateCcw size={16} />
                             </button>
+
                             <button
-                                onClick={syncSramWithDex}
-                                className="p-2 rounded-xl bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 text-green-400 transition-all"
-                                title="Forçar Sincronização do Save com a Dex"
+                                onClick={handleQuickSaveState}
+                                className="px-2.5 py-1.5 bg-purple-600/20 hover:bg-purple-600/40 border border-purple-500/30 text-purple-300 text-xs font-bold rounded-xl transition-all"
+                                title="Quick Save State"
                             >
-                                <Save size={16} />
+                                State +
                             </button>
+
+                            {quickStateBlob && (
+                                <button
+                                    onClick={handleQuickLoadState}
+                                    className="px-2.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold rounded-xl transition-all"
+                                    title="Quick Load State"
+                                >
+                                    State ⟳
+                                </button>
+                            )}
+
                             <button
                                 onClick={handleExportSave}
                                 className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
@@ -287,6 +404,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                             >
                                 <Download size={16} />
                             </button>
+
                             <button
                                 onClick={handleScreenshot}
                                 className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
@@ -294,6 +412,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                             >
                                 <Camera size={16} />
                             </button>
+
                             <button
                                 onClick={handleFullscreen}
                                 className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 transition-all"
@@ -322,16 +441,14 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 </div>
             )}
 
-            {/* Container da Tela do Jogo */}
+            {/* Container do Jogo */}
             <div className="relative w-full aspect-[3/2] max-w-[720px] bg-black rounded-3xl overflow-hidden border-4 border-gray-800 shadow-2xl flex items-center justify-center">
                 
-                {/* Canvas onde o Nostalgist renderiza o jogo nativamente */}
                 <canvas
                     ref={canvasRef}
                     className={`w-full h-full object-contain image-pixelated ${!isEmulatorRunning ? 'hidden' : 'block'}`}
                 />
 
-                {/* Tela de Espera / Placeholder */}
                 {!isEmulatorRunning && (
                     <div className="flex flex-col items-center justify-center gap-5 p-8 text-center">
                         {isLoadingCore ? (
@@ -350,11 +467,10 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                                 <div className="space-y-1">
                                     <h4 className="font-black text-lg text-gray-200">Pronto para Jogar</h4>
                                     <p className="text-xs text-gray-400 max-w-md">
-                                        Clique no botão acima ou selecione seu arquivo <code>.gba</code> ou <code>.zip</code> para iniciar a emulação.
+                                        Clique no botão acima para selecionar a ROM. Seu save será lembrado automaticamente!
                                     </p>
                                 </div>
 
-                                {/* ROMs salvas no navegador */}
                                 {storedRoms.length > 0 && (
                                     <div className="pt-4 border-t border-white/10 w-full space-y-2">
                                         <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">ROMs Salvas no seu Navegador:</p>
@@ -378,11 +494,11 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 )}
             </div>
 
-            {/* Mapeamento de Controles Atualizado */}
+            {/* Mapeamento de Controles */}
             <div className="w-full max-w-[720px] bg-gray-900/60 border border-white/10 p-4 rounded-2xl flex flex-wrap items-center justify-between text-xs text-gray-400 gap-3 shadow-lg">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                    <span className="font-bold text-gray-200">⌨️ Teclado:</span>
-                    <span><strong className="text-red-400">W, A, S, D</strong> = Direcionais</span>
+                    <span className="font-bold text-gray-200">⌨️ Controles:</span>
+                    <span><strong className="text-red-400">WASD</strong> = Direcionais</span>
                     <span><strong className="text-yellow-400">E</strong> = Botão A</span>
                     <span><strong className="text-blue-400">Shift</strong> = Botão B</span>
                     <span><strong>Q / R</strong> = L / R</span>
@@ -397,7 +513,7 @@ export const GbaEmulator: React.FC<GbaEmulatorProps> = ({
                 </button>
             </div>
 
-            {/* Gamepad Virtual Touch para Mobile */}
+            {/* Gamepad Virtual Touch para Celulares */}
             {showTouchControls && isEmulatorRunning && (
                 <div className="w-full max-w-[720px] bg-gray-950/90 border border-white/10 p-6 rounded-3xl grid grid-cols-2 gap-8 select-none">
                     {/* D-Pad */}

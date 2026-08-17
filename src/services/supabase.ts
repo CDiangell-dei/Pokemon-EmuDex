@@ -34,10 +34,10 @@ export function configureSupabase(url: string, key: string): boolean {
     }
 }
 
-export async function syncRunToDatabase(runData: any): Promise<{ success: boolean; message: string }> {
+export async function syncRunToDatabase(runData: any, userId?: string | null): Promise<{ success: boolean; message: string }> {
     try {
         const supabase = getSupabase();
-        const payload = {
+        const payload: any = {
             id: String(runData.id),
             trainer_name: runData.trainer || 'Treinador',
             trainer_id: runData.trainer_id || 0,
@@ -54,6 +54,10 @@ export async function syncRunToDatabase(runData: any): Promise<{ success: boolea
             updated_at: new Date().toISOString()
         };
 
+        if (userId && !userId.startsWith('guest_')) {
+            payload.user_id = userId;
+        }
+
         const { error } = await supabase.from('runs').upsert(payload);
         if (error) throw error;
 
@@ -64,13 +68,16 @@ export async function syncRunToDatabase(runData: any): Promise<{ success: boolea
     }
 }
 
-export async function syncSaveFileWithCloud(gameCode: string, localSave: StoredSave): Promise<{ status: string; message: string }> {
+export async function syncSaveFileWithCloud(gameCode: string, localSave: StoredSave, userId?: string | null): Promise<{ status: string; message: string }> {
     const supabase = getSupabase();
     try {
-        const fileName = `${gameCode}.sav`;
+        const path = (userId && !userId.startsWith('guest_'))
+            ? `${userId}/${gameCode}.sav`
+            : `${gameCode}.sav`;
+            
         const bucket = 'saves';
 
-        const { error: uploadError } = await supabase.storage.from(bucket).upload(fileName, localSave.sramData, {
+        const { error: uploadError } = await supabase.storage.from(bucket).upload(path, localSave.sramData, {
             upsert: true,
             contentType: 'application/octet-stream'
         });
@@ -80,5 +87,22 @@ export async function syncSaveFileWithCloud(gameCode: string, localSave: StoredS
     } catch (err: any) {
         console.error('Erro na sincronização de save:', err);
         return { status: 'error', message: `Erro: ${err.message || err}` };
+    }
+}
+
+export async function loadUserRunsFromCloud(userId: string): Promise<any[]> {
+    try {
+        const supabase = getSupabase();
+        const { data, error } = await supabase
+            .from('runs')
+            .select('*')
+            .eq('user_id', userId)
+            .order('updated_at', { ascending: false });
+
+        if (error) throw error;
+        return data || [];
+    } catch (e) {
+        console.warn('Erro ao carregar runs da nuvem:', e);
+        return [];
     }
 }
